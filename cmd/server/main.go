@@ -11,10 +11,12 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"time"
 )
 
 func main() {
-	connectionString := "amqp://guest:guest@localhost:5672/"
+	//connectionString := "amqp://guest:guest@localhost:5672/"
+	connectionString := "amqp://guest:guest@host.docker.internal:5672/"
 
 	conn, err := amqp.Dial(connectionString)
 	if err != nil {
@@ -28,25 +30,34 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to open a channel: %v", err)
 	}
-	defer rmqChannel.Close()
+	//defer rmqChannel.Close()
 
 	fmt.Println("Channel opened successfully!")
 	// Create the state we want to send to the client
 	state := routing.PlayingState{
 		IsPaused: true,
 	}
-	// Call PublishJSON to send the state to the "game_state" exchange with the routing key "state.update"
+	fmt.Println("DEBUG exchange:", routing.ExchangePerilDirect)
+	fmt.Println("DEBUG pause key:", routing.PauseKey)
 	err = pubsub.PublishJSON(
 		rmqChannel,
 		routing.ExchangePerilDirect,
 		routing.PauseKey,
 		state,
 	)
-	if err != nil {
-		log.Fatalf("Failed to publish mesgame state: %v", err)
-	}
-	fmt.Println("Pause message published successfully!")
 
+	if err != nil {
+		log.Fatalf("Failed to publish game state: %v", err)
+	}
+	fmt.Printf("Publishing to %s with key %s: %+v\n", routing.ExchangePerilDirect, routing.PauseKey, state)
+	// ... after your PublishJSON call ...
+
+	fmt.Println("Message published. Keeping connection open for 30 seconds...")
+	fmt.Println("Check the Connections tab now!")
+
+	// Block here so the connection stays visible in the UI
+	time.Sleep(30 * time.Second)
+	//fmt.Println("Pause message published successfully!")
 	// Wait for signal to exit (e.g., Ctrl+C) to exit gracefully
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
