@@ -2,20 +2,19 @@ package main
 
 import (
 	// Local packages
+	"github.com/diverdib/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/diverdib/learn-pub-sub-starter/internal/pubsub"
 	"github.com/diverdib/learn-pub-sub-starter/internal/routing"
 
 	// Standard library packages
 	"fmt"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"log"
-	"os"
-	"os/signal"
-	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
-	//connectionString := "amqp://guest:guest@localhost:5672/"
+	//connectionString := "amqp://guest:guest@127.0.0.1:5672/"
 	connectionString := "amqp://guest:guest@host.docker.internal:5672/"
 
 	conn, err := amqp.Dial(connectionString)
@@ -24,46 +23,80 @@ func main() {
 	}
 	defer conn.Close()
 
-	fmt.Println("Connected to RabbitMQ successfully!")
+	fmt.Println("Server connected to RabbitMQ successfully!")
 
 	rmqChannel, err := conn.Channel()
 	if err != nil {
 		log.Fatalf("Failed to open a channel: %v", err)
 	}
-	//defer rmqChannel.Close()
+	defer rmqChannel.Close()
 
 	fmt.Println("Channel opened successfully!")
-	// Create the state we want to send to the client
-	state := routing.PlayingState{
-		IsPaused: true,
-	}
-	fmt.Println("DEBUG exchange:", routing.ExchangePerilDirect)
-	fmt.Println("DEBUG pause key:", routing.PauseKey)
-	err = pubsub.PublishJSON(
-		rmqChannel,
-		routing.ExchangePerilDirect,
-		routing.PauseKey,
-		state,
+
+	// Declare the exchange (if it doesn't already exist)
+	err = rmqChannel.ExchangeDeclare(
+		routing.ExchangePerilDirect, // name
+		"direct",                    // type
+		true,                        // durable
+		false,                       // auto-deleted
+		false,                       // internal
+		false,                       // no-wait
+		nil,                         // arguments
 	)
-
 	if err != nil {
-		log.Fatalf("Failed to publish game state: %v", err)
+		log.Fatalf("Failed to declare exchange: %v", err)
 	}
-	fmt.Printf("Publishing to %s with key %s: %+v\n", routing.ExchangePerilDirect, routing.PauseKey, state)
-	// ... after your PublishJSON call ...
+	fmt.Printf("Exchange %s declared successfully!\n", routing.ExchangePerilDirect)
 
-	fmt.Println("Message published. Keeping connection open for 30 seconds...")
-	fmt.Println("Check the Connections tab now!")
+	gamelogic.PrintServerHelp()
+	for {
+		words := gamelogic.GetInput()
+		if len(words) == 0 {
+			continue
+		}
+		cmd := words[0]
+		switch cmd {
+		case "pause":
+			fmt.Println("Pausing the game...")
+			// Create the state we want to send to the client
+			state := routing.PlayingState{
+				IsPaused: true,
+			}
+			err = pubsub.PublishJSON(
+				rmqChannel,
+				routing.ExchangePerilDirect,
+				routing.PauseKey,
+				state,
+			)
 
-	// Block here so the connection stays visible in the UI
-	time.Sleep(30 * time.Second)
-	//fmt.Println("Pause message published successfully!")
-	// Wait for signal to exit (e.g., Ctrl+C) to exit gracefully
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt)
-	// Block until a signal is received
-	<-signalChan
-	// Perform any necessary cleanup here before exiting
-	fmt.Println("\nReceived interrupt signal, shutting down...")
+			if err != nil {
+				log.Fatalf("Failed to publish game state: %v", err)
+			}
+			fmt.Printf("Publishing to %s with key %s: %+v\n", routing.ExchangePerilDirect, routing.PauseKey, state)
+		case "resume":
+			fmt.Println("Resuming the game...")
+			state := routing.PlayingState{
+				IsPaused: false,
+			}
+			err = pubsub.PublishJSON(
+				rmqChannel,
+				routing.ExchangePerilDirect,
+				routing.PauseKey,
+				state,
+			)
 
+			if err != nil {
+				log.Fatalf("Failed to publish game state: %v", err)
+			}
+			fmt.Printf("Publishing to %s with key %s: %+v\n", routing.ExchangePerilDirect, routing.PauseKey, state)
+		case "help":
+			gamelogic.PrintServerHelp()
+		case "quit":
+			fmt.Println("Quitting the server...")
+			return
+		default:
+			fmt.Printf("Unknown command: %s\n", cmd)
+			gamelogic.PrintServerHelp()
+		}
+	}
 }
