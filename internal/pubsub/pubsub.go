@@ -29,6 +29,39 @@ func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
 
 }
 
+func SubscribeJSON[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T),
+) error {
+	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
+	if err != nil {
+		return err
+	}
+
+	msgs, err := ch.Consume(queue.Name, "", false, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		for d := range msgs {
+			var val T
+			if err := json.Unmarshal(d.Body, &val); err != nil {
+				continue
+			}
+			handler(val)
+			// Acknowledge the message with delivery.Ack(false)
+			d.Ack(false)
+		}
+	}()
+
+	return nil
+}
+
 func DeclareAndBind(
 	conn *amqp.Connection,
 	exchange,

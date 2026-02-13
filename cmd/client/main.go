@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-
+	// Connect to RabbitMQ
 	//connectionString := "amqp://guest:guest@127.0.0.1:5672/"
 	connectionString := "amqp://guest:guest@host.docker.internal:5672/"
 
@@ -21,27 +21,38 @@ func main() {
 	}
 	defer conn.Close()
 
-	fmt.Println("Client connected to RabbitMQ successfully!")
-
+	// Get the username for this client
 	username, err := gamelogic.ClientWelcome()
 	if err != nil {
 		log.Fatalf("could not get username: %v", err)
 	}
 
+	gs := gamelogic.NewGameState(username)
+
+	// Set exchange, routing key, and queue name for this client
 	exch := routing.ExchangePerilDirect
 	key := routing.PauseKey
 	queueName := key + "." + username
 
-	ch, queue, err := pubsub.DeclareAndBind(conn, exch, queueName, key, pubsub.Transient)
+	err = pubsub.SubscribeJSON(conn, exch, queueName, key, pubsub.Transient, handlerPause(gs))
+	if err != nil {
+		log.Fatalf("Failed to subscribe to pause messages: %v", err)
+	}
+
+	// Set exchange, routing key, and queue name for this client
+	exch = routing.ExchangePerilTopic
+	key = routing.GameLogSlug
+	queueName = key
+
+	// Declare and bind a durable queue for this client
+	ch2, _, err := pubsub.DeclareAndBind(conn, exch, queueName, key, pubsub.Durable)
 	if err != nil {
 		log.Fatalf("Failed to declare and bind queue: %v", err)
 	}
-	defer ch.Close()
 
-	fmt.Printf("Queue %s declared and bound successfully!\n", queue.Name)
+	defer ch2.Close()
 
-	// Initialize the game state for the client
-	gs := gamelogic.NewGameState(username)
+
 
 	for {
 		words := gamelogic.GetInput()
@@ -75,5 +86,12 @@ func main() {
 			fmt.Printf("Unknown command: %s\n", cmd)
 			continue
 		}
+	}
+}
+
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
+	return func(ps routing.PlayingState) {
+		defer fmt.Print("> ")
+		gs.HandlePause(ps)
 	}
 }

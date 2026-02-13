@@ -46,7 +46,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to declare exchange: %v", err)
 	}
-	fmt.Printf("Exchange %s declared successfully!\n", routing.ExchangePerilDirect)
 
 	gamelogic.PrintServerHelp()
 	for {
@@ -72,7 +71,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("Failed to publish game state: %v", err)
 			}
-			fmt.Printf("Publishing to %s with key %s: %+v\n", routing.ExchangePerilDirect, routing.PauseKey, state)
+
 		case "resume":
 			fmt.Println("Resuming the game...")
 			state := routing.PlayingState{
@@ -88,7 +87,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("Failed to publish game state: %v", err)
 			}
-			fmt.Printf("Publishing to %s with key %s: %+v\n", routing.ExchangePerilDirect, routing.PauseKey, state)
+
 		case "help":
 			gamelogic.PrintServerHelp()
 		case "quit":
