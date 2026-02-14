@@ -29,30 +29,74 @@ func main() {
 
 	gs := gamelogic.NewGameState(username)
 
-	// Set exchange, routing key, and queue name for this client
+	// SUBSCRIBE: Each client gets their own unique, temporary queue for pause events.
+	// This allows EVERY player to receive the "Pause" signal simultaneously.
 	exch := routing.ExchangePerilDirect
 	key := routing.PauseKey
 	queueName := key + "." + username
 
-	err = pubsub.SubscribeJSON(conn, exch, queueName, key, pubsub.Transient, handlerPause(gs))
+	err = pubsub.SubscribeJSON(
+		conn,
+		exch,
+		queueName,
+		key,
+		pubsub.Transient,
+		func(ps routing.PlayingState) pubsub.AckAction {
+			gs.HandlePause(ps)
+			fmt.Print("> ")
+			return pubsub.Ack
+		},
+	)
 	if err != nil {
 		log.Fatalf("Failed to subscribe to pause messages: %v", err)
 	}
 
-	// Set exchange, routing key, and queue name for this client
+	// DECLARE: A shared, durable queue for logging game events.
+	// Since the queue name is NOT unique to the client, all clients connect to the
+	// SAME queue. This is used for persistent logging of the game's history.
 	exch = routing.ExchangePerilTopic
-	key = routing.GameLogSlug
+	key = routing.GameLogSlug // "game_logs"
 	queueName = key
 
-	// Declare and bind a durable queue for this client
-	ch2, _, err := pubsub.DeclareAndBind(conn, exch, queueName, key, pubsub.Durable)
+	publishCh, _, err := pubsub.DeclareAndBind(conn, exch, queueName, key, pubsub.Durable)
 	if err != nil {
 		log.Fatalf("Failed to declare and bind queue: %v", err)
 	}
 
-	defer ch2.Close()
+	defer publishCh.Close()
 
+	// SUBSCRIBE: A unique, temporary queue to listen for moves.
+	// We use a wildcard (*) so this client receives moves from ANY player.
+	// The unique queueName ensures we don't 'steal' move messages from other players.
+	exch = routing.ExchangePerilTopic
+	key = routing.ArmyMovesPrefix + ".*" // Listen for "army_moves.<anything>"
+	queueName = routing.ArmyMovesPrefix + "." + username
 
+	err = pubsub.SubscribeJSON(
+		conn,
+		exch,
+		queueName,
+		key,
+		pubsub.Transient,
+		func(move gamelogic.ArmyMove) pubsub.AckAction {
+			outcome := gs.HandleMove(move)
+			defer fmt.Print("> ")
+
+			switch outcome {
+			case gamelogic.MoveOutComeSafe, gamelogic.MoveOutcomeMakeWar:
+				return pubsub.Ack
+			case gamelogic.MoveOutcomeSamePlayer:
+				return pubsub.NackDiscard
+			default:
+				return pubsub.NackDiscard
+			}
+		},
+	)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to move messages: %v", err)
+	}
+
+	fmt.Println("Client setup complete! You can now enter commands.")
 
 	for {
 		words := gamelogic.GetInput()
@@ -68,11 +112,23 @@ func main() {
 				continue
 			}
 		case "move":
-			_, err := gs.CommandMove(words)
+			move, err := gs.CommandMove(words)
 			if err != nil {
 				fmt.Printf("Error moving unit: %v\n", err)
 				continue
 			}
+			key := routing.ArmyMovesPrefix + "." + username
+			err = pubsub.PublishJSON(
+				publishCh,
+				routing.ExchangePerilTopic,
+				key,
+				move,
+			)
+			if err != nil {
+				fmt.Printf("Error publishing move: %v\n", err)
+				continue
+			}
+
 		case "status":
 			gs.CommandStatus()
 		case "help":

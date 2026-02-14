@@ -3,8 +3,10 @@ package pubsub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/diverdib/learn-pub-sub-starter/internal/routing"
 )
 
 type SimpleQueueType int
@@ -12,6 +14,18 @@ type SimpleQueueType int
 const (
 	Durable SimpleQueueType = iota
 	Transient
+)
+
+// AckAction is our custom "acktype"
+type AckAction int
+
+const (
+	// Ack: Processed successfully
+	Ack AckAction = iota
+	// NackRequeue: Not processed successfully, but should be retried
+	NackRequeue
+	// NackDiscard: Not processed successfully, and should be deleted
+	NackDiscard
 )
 
 func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
@@ -35,7 +49,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T),
+	handler func(T) AckAction,
 ) error {
 	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -53,9 +67,20 @@ func SubscribeJSON[T any](
 			if err := json.Unmarshal(d.Body, &val); err != nil {
 				continue
 			}
-			handler(val)
-			// Acknowledge the message with delivery.Ack(false)
-			d.Ack(false)
+			action := handler(val)
+
+			// Respond to RabbitMQ baed on the handler's AckAction
+			switch action {
+			case Ack:
+				d.Ack(false)
+				fmt.Println("Message Acked")
+			case NackRequeue:
+				d.Nack(false, true)
+				fmt.Println("Message Nacked and Requeued")
+			case NackDiscard:
+				d.Nack(false, false)
+				fmt.Println("Message Nacked and Discarded")
+			}
 		}
 	}()
 
@@ -78,13 +103,16 @@ func DeclareAndBind(
 	durable := queueType == Durable
 	autoDelete := queueType == Transient
 	exclusive := queueType == Transient
+	args := amqp.Table{
+		"x-dead-letter-exchange": routing.ExchangePerilDLX,
+	}
 	queue, err := ch.QueueDeclare(
 		queueName,
 		durable,    // durable
 		autoDelete, // delete when unused
 		exclusive,  // exclusive
 		false,      // no-wait
-		nil,        // arguments
+		args,       // arguments
 	)
 	if err != nil {
 		return nil, amqp.Queue{}, err
