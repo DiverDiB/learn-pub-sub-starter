@@ -1,12 +1,14 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/diverdib/learn-pub-sub-starter/internal/routing"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type SimpleQueueType int
@@ -49,7 +51,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T) AckAction,
+	handler func(*amqp.Channel, T) AckAction,
 ) error {
 	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -62,12 +64,13 @@ func SubscribeJSON[T any](
 	}
 
 	go func() {
+		defer ch.Close()
 		for d := range msgs {
 			var val T
 			if err := json.Unmarshal(d.Body, &val); err != nil {
 				continue
 			}
-			action := handler(val)
+			action := handler(ch, val)
 
 			// Respond to RabbitMQ baed on the handler's AckAction
 			switch action {
@@ -130,4 +133,19 @@ func DeclareAndBind(
 	}
 
 	return ch, queue, nil
+}
+
+func PublishGob(ch *amqp.Channel, exchange, key string, val any) error {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	err := enc.Encode(val)
+	if err != nil {
+		fmt.Printf("Failed to encode value: %v\n", err)
+		return err
+	}
+
+	return ch.PublishWithContext(context.Background(), exchange, key, false, false, amqp.Publishing{
+		ContentType: "application/gob",
+		Body:        buf.Bytes(),
+	})
 }

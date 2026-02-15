@@ -7,7 +7,7 @@ type PlayingState struct {
 }
 
 type GameLog struct {
+	Username    string
 	CurrentTime time.Time
 	Message     string
-	Username    string
 }
