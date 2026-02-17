@@ -22,41 +22,34 @@ const (
 type AckAction int
 
 const (
-	// Ack: Processed successfully
 	Ack AckAction = iota
-	// NackRequeue: Not processed successfully, but should be retried
 	NackRequeue
-	// NackDiscard: Not processed successfully, and should be deleted
 	NackDiscard
 )
 
-func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
-	// Marshal the value to JSON
-	data, err := json.Marshal(val)
-	if err != nil {
-		return err
-	}
-
-	// PublisthWithContext to the exchange with the routing key
-	return ch.PublishWithContext(context.Background(), exchange, key, false, false, amqp.Publishing{
-		ContentType: "application/json",
-		Body:        data,
-	})
-
-}
-
-func SubscribeJSON[T any](
+// Internal helper that handles the RabbitMQ boilerplate
+func subscribe[T any](
 	conn *amqp.Connection,
 	exchange,
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(*amqp.Channel, T) AckAction,
+	handler func(T) AckAction,
+	unmarshaller func([]byte) (T, error),
 ) error {
+	// Use existing helper to declare and bind the queue
 	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
 		return err
 	}
+	// Call channel.Qos, limit prefetch count to 10
+	err = ch.Qos(10, 0, false)
+	if err != nil {
+		ch.Close()
+		return err
+	}
+
+	// Consume messages from the queue
 
 	msgs, err := ch.Consume(queue.Name, "", false, false, false, false, nil)
 	if err != nil {
@@ -66,28 +59,74 @@ func SubscribeJSON[T any](
 	go func() {
 		defer ch.Close()
 		for d := range msgs {
-			var val T
-			if err := json.Unmarshal(d.Body, &val); err != nil {
+			target, err := unmarshaller(d.Body)
+			if err != nil {
+				fmt.Printf("Failed to unmarshal message: %v\n", err)
 				continue
 			}
-			action := handler(ch, val)
 
-			// Respond to RabbitMQ baed on the handler's AckAction
+			action := handler(target)
+
 			switch action {
 			case Ack:
 				d.Ack(false)
-				fmt.Println("Message Acked")
 			case NackRequeue:
 				d.Nack(false, true)
-				fmt.Println("Message Nacked and Requeued")
 			case NackDiscard:
 				d.Nack(false, false)
-				fmt.Println("Message Nacked and Discarded")
 			}
 		}
 	}()
 
 	return nil
+}
+
+func SubscribeJSON[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckAction,
+) error {
+	return subscribe(
+		conn,
+		exchange,
+		queueName,
+		key,
+		queueType,
+		handler,
+		func(data []byte) (T, error) {
+			var val T
+			err := json.Unmarshal(data, &val)
+			return val, err
+		},
+	)
+}
+
+func SubscribeGob[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckAction,
+) error {
+	return subscribe(
+		conn,
+		exchange,
+		queueName,
+		key,
+		queueType,
+		handler,
+		func(data []byte) (T, error) {
+			var val T
+			buf := bytes.NewBuffer(data)
+			dec := gob.NewDecoder(buf)
+			err := dec.Decode(&val)
+			return val, err
+		},
+	)
 }
 
 func DeclareAndBind(
@@ -135,7 +174,26 @@ func DeclareAndBind(
 	return ch, queue, nil
 }
 
-func PublishGob(ch *amqp.Channel, exchange, key string, val any) error {
+func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
+	// Marshal the value to JSON
+	data, err := json.Marshal(val)
+	if err != nil {
+		return err
+	}
+
+	return ch.PublishWithContext(context.Background(), exchange, key, false, false, amqp.Publishing{
+		ContentType: "application/json",
+		Body:        data,
+	})
+
+}
+
+func PublishGob(
+	ch *amqp.Channel,
+	exchange,
+	key string,
+	val any,
+) error {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	err := enc.Encode(val)

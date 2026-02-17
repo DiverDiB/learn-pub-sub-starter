@@ -47,6 +47,28 @@ func main() {
 		log.Fatalf("Failed to declare exchange: %v", err)
 	}
 
+	// Subscribe to the Game Logs
+	err = pubsub.SubscribeGob(
+		conn,
+		routing.ExchangePerilTopic,
+		routing.GameLogSlug,
+		routing.GameLogSlug+".*",
+		pubsub.Durable,
+		func(log routing.GameLog) pubsub.AckAction {
+			defer fmt.Print("> ")
+
+			err := gamelogic.WriteLog(log)
+			if err != nil {
+				fmt.Printf("Failed to write log: %v\n", err)
+				return pubsub.NackRequeue
+			}
+			return pubsub.Ack
+		},
+	)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to game logs: %v", err)
+	}
+
 	gamelogic.PrintServerHelp()
 	for {
 		words := gamelogic.GetInput()

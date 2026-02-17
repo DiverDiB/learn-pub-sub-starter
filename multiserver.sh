@@ -25,6 +25,7 @@ trap 'cleanup' SIGINT
 
 # Start the specified number of instances of the program in the background
 for (( i=0; i<num_instances; i++ )); do
+  fmt.Printf "Starting instance %d...\n" $((i+1))
   go run ./cmd/server &
   pids+=($!)
 done

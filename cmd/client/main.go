@@ -1,13 +1,18 @@
 package main
 
 import (
+	// Standard library packages
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 
+	// Local packages
 	"github.com/diverdib/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/diverdib/learn-pub-sub-starter/internal/pubsub"
 	"github.com/diverdib/learn-pub-sub-starter/internal/routing"
+
+	// Third-party packages
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -21,6 +26,12 @@ func main() {
 		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
 	}
 	defer conn.Close()
+
+	publishCh, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open a channel: %v", err)
+	}
+	defer publishCh.Close()
 
 	// Get the username for this client
 	username, err := gamelogic.ClientWelcome()
@@ -42,11 +53,7 @@ func main() {
 		queueName,
 		key,
 		pubsub.Transient,
-		func(ch *amqp.Channel, ps routing.PlayingState) pubsub.AckAction {
-			gs.HandlePause(ps)
-			fmt.Print("> ")
-			return pubsub.Ack
-		},
+		handlerPause,
 	)
 	if err != nil {
 		log.Fatalf("Failed to subscribe to pause messages: %v", err)
@@ -58,13 +65,6 @@ func main() {
 	exch = routing.ExchangePerilTopic
 	key = routing.GameLogSlug + ".*" // Listen for "game_logs.<anything>"
 	queueName = routing.GameLogSlug
-
-	publishCh, _, err := pubsub.DeclareAndBind(conn, exch, queueName, key, pubsub.Durable)
-	if err != nil {
-		log.Fatalf("Failed to declare and bind queue: %v", err)
-	}
-
-	defer publishCh.Close()
 
 	// SUBSCRIBE: A unique, temporary queue to listen for moves.
 	// We use a wildcard (*) so this client receives moves from ANY player.
@@ -79,7 +79,7 @@ func main() {
 		queueName,
 		key,
 		pubsub.Transient,
-		func(ch *amqp.Channel, move gamelogic.ArmyMove) pubsub.AckAction {
+		func(move gamelogic.ArmyMove) pubsub.AckAction {
 			outcome := gs.HandleMove(move)
 			defer fmt.Print("> ")
 
@@ -94,7 +94,7 @@ func main() {
 				}
 				// Publish to the topic exchange
 				warKey := routing.WarRecognitionsPrefix + "." + gs.GetPlayerSnap().Username
-				err := pubsub.PublishJSON(ch, routing.ExchangePerilTopic, warKey, warMsg)
+				err := pubsub.PublishJSON(publishCh, routing.ExchangePerilTopic, warKey, warMsg)
 				if err != nil {
 					fmt.Printf("Failed to publish war recognition: %v", err)
 					return pubsub.NackRequeue
@@ -119,7 +119,7 @@ func main() {
 		warQueueName,
 		routing.WarRecognitionsPrefix+".*",
 		pubsub.Durable,
-		func(ch *amqp.Channel, rw gamelogic.RecognitionOfWar) pubsub.AckAction {
+		func(rw gamelogic.RecognitionOfWar) pubsub.AckAction {
 			defer fmt.Print("> ")
 
 			// Process the war through the game engine
@@ -145,7 +145,7 @@ func main() {
 				// Publish the full GameLog structure to the topic exchange
 				fmt.Printf("Attempting to publish log for %s...\n", rw.Attacker.Username)
 				err := pubsub.PublishGob(
-					ch,
+					publishCh,
 					routing.ExchangePerilTopic,
 					logKey,
 					routing.GameLog{
@@ -203,7 +203,35 @@ func main() {
 		case "help":
 			gamelogic.PrintClientHelp()
 		case "spam":
-			fmt.Println("Spamming not allowed yet!")
+			if len(words) < 2 {
+				fmt.Println("Usage: spam <number_of_messages>")
+				continue
+			}
+			// Convert to integer for the number of messages to send
+			numSpam, err := strconv.Atoi(words[1])
+			if err != nil {
+				fmt.Println("Error: Invalid number of spam messages")
+				continue
+			}
+			for i := range numSpam {
+				malMsg := gamelogic.GetMaliciousLog()
+				//fmt.Printf("Publishing spam message %d: %s\n", i+1, malMsg)
+
+				key := routing.GameLogSlug + "." + username
+				err = pubsub.PublishGob(
+					publishCh,
+					routing.ExchangePerilTopic,
+					key,
+					routing.GameLog{
+						Username:    username,
+						CurrentTime: time.Now(),
+						Message:     malMsg,
+					},
+				)
+				if err != nil {
+					fmt.Printf("Error publishing spam message %d: %v\n", i+1, err)
+				}
+			}
 		case "quit":
 			gamelogic.PrintQuit()
 			return
@@ -214,12 +242,11 @@ func main() {
 	}
 }
 
-// 1. Update the return type signature to include *amqp.Channel
-func handlerPause(gs *gamelogic.GameState) func(*amqp.Channel, routing.PlayingState) pubsub.AckAction {
-	// 2. Update the inner function to accept the channel (even if we don't use it)
-	return func(ch *amqp.Channel, ps routing.PlayingState) pubsub.AckAction {
-		defer fmt.Print("> ")
-		gs.HandlePause(ps)
-		return pubsub.Ack
+func handlerPause(gs routing.PlayingState) pubsub.AckAction {
+	if gs.IsPaused {
+		fmt.Println("Game is paused. Please wait...")
+	} else {
+		fmt.Println("Game is resumed. You may continue playing.")
 	}
+	return pubsub.Ack
 }
